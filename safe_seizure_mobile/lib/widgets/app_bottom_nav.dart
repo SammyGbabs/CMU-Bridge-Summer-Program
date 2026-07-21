@@ -18,7 +18,7 @@ class AppBottomNav extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.surfaceCard,
         borderRadius: BorderRadius.circular(30),
@@ -39,15 +39,15 @@ class AppBottomNav extends StatelessWidget {
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               padding: isActive
-                  ? const EdgeInsets.symmetric(horizontal: 20, vertical: 12)
-                  : const EdgeInsets.all(12),
+                  ? const EdgeInsets.symmetric(horizontal: 22, vertical: 14)
+                  : const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: isActive ? AppColors.textHeading : Colors.transparent,
                 borderRadius: BorderRadius.circular(24),
               ),
               child: Icon(
                 icons[index],
-                size: 22,
+                size: 25,
                 color: isActive ? Colors.white : AppColors.textSecondary,
               ),
             ),
