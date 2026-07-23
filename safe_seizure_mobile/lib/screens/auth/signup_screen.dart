@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../theme/app_colors.dart';
 import '../../widgets/app_back_button.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_text_field.dart';
+import '../../widgets/pill_filter.dart';
 import '../root/root_screen.dart';
+
+const _roleOptions = ['User', 'Caregiver'];
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -20,6 +24,9 @@ class _SignupScreenState extends State<SignupScreen> {
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
 
+  bool _isLoading = false;
+  int _roleIndex = 1;
+
   @override
   void dispose() {
     _firstNameController.dispose();
@@ -30,11 +37,54 @@ class _SignupScreenState extends State<SignupScreen> {
     super.dispose();
   }
 
-  void _createAccount() {
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const RootScreen()),
-      (route) => false,
-    );
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _createAccount() async {
+    final firstName = _firstNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final confirmPassword = _confirmPasswordController.text;
+
+    if (firstName.isEmpty ||
+        lastName.isEmpty ||
+        email.isEmpty ||
+        password.isEmpty) {
+      _showMessage('Please fill in all fields.');
+      return;
+    }
+    if (password != confirmPassword) {
+      _showMessage('Passwords do not match.');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      await Supabase.instance.client.auth.signUp(
+        email: email,
+        password: password,
+        data: {
+          'first_name': firstName,
+          'last_name': lastName,
+          'role': _roleOptions[_roleIndex].toLowerCase(),
+        },
+      );
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const RootScreen()),
+        (route) => false,
+      );
+    } on AuthException catch (e) {
+      _showMessage(e.message);
+    } catch (_) {
+      _showMessage('Something went wrong. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   void _goToLogin() {
@@ -80,7 +130,23 @@ class _SignupScreenState extends State<SignupScreen> {
                           height: 1.5,
                         ),
                       ),
-                      const SizedBox(height: 32),
+                      const SizedBox(height: 28),
+                      const Text(
+                        'I am a',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textHeading,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      PillFilter(
+                        options: _roleOptions,
+                        selectedIndex: _roleIndex,
+                        onChanged: (index) =>
+                            setState(() => _roleIndex = index),
+                      ),
+                      const SizedBox(height: 24),
                       AppTextField(
                         label: 'First Name',
                         controller: _firstNameController,
@@ -112,6 +178,7 @@ class _SignupScreenState extends State<SignupScreen> {
                       AppButton(
                         label: 'Create Account',
                         onPressed: _createAccount,
+                        isLoading: _isLoading,
                       ),
                       const SizedBox(height: 20),
                       Row(

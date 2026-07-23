@@ -1,14 +1,16 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+
+import '../../services/ble_connection_service.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/app_button.dart';
 
-const _deviceName = 'SafeSeizure Band · A21F';
-
-enum _PairStage { idle, scanning, discovered, connecting, connected }
-
 class DeviceScreen extends StatefulWidget {
-  const DeviceScreen({super.key});
+  const DeviceScreen({super.key, required this.bleService});
+
+  final BleConnectionService bleService;
 
   @override
   State<DeviceScreen> createState() => _DeviceScreenState();
@@ -17,7 +19,16 @@ class DeviceScreen extends StatefulWidget {
 class _DeviceScreenState extends State<DeviceScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulseController;
-  _PairStage _stage = _PairStage.idle;
+  late final StreamSubscription<bool> _connectionSubscription;
+  late final StreamSubscription<List<ScanResult>> _scanResultsSubscription;
+
+  bool _isScanning = false;
+  bool _isConnected = false;
+  List<ScanResult> _foundDevices = const [];
+  String? _connectingRemoteId;
+  Timer? _scanTimeoutTimer;
+
+  BleConnectionService get _bleService => widget.bleService;
 
   @override
   void initState() {
@@ -26,36 +37,69 @@ class _DeviceScreenState extends State<DeviceScreen>
       vsync: this,
       duration: const Duration(milliseconds: 2200),
     )..repeat();
+
+    _isConnected = _bleService.isConnected;
+    _connectionSubscription = _bleService.connectionStream.listen((
+      connected,
+    ) {
+      if (!mounted) return;
+      setState(() {
+        _isConnected = connected;
+        if (connected) {
+          _isScanning = false;
+          _connectingRemoteId = null;
+        }
+      });
+    });
+    _scanResultsSubscription = _bleService.scanResultsStream.listen((
+      results,
+    ) {
+      if (!mounted) return;
+      setState(() => _foundDevices = results);
+    });
   }
 
   @override
   void dispose() {
+    _scanTimeoutTimer?.cancel();
+    _connectionSubscription.cancel();
+    _scanResultsSubscription.cancel();
     _pulseController.dispose();
     super.dispose();
   }
 
-  Future<void> _startScan() async {
-    setState(() => _stage = _PairStage.scanning);
-    await Future.delayed(const Duration(seconds: 2));
-    if (!mounted) return;
-    setState(() => _stage = _PairStage.discovered);
+  void _startScan() {
+    setState(() {
+      _isScanning = true;
+      _foundDevices = const [];
+    });
+    _bleService.startScan();
+
+    // The BLE scan itself times out after 10s; give it a little more room,
+    // then fall back to idle if nothing was tapped.
+    _scanTimeoutTimer?.cancel();
+    _scanTimeoutTimer = Timer(const Duration(seconds: 11), () {
+      if (!mounted || _isConnected) return;
+      setState(() => _isScanning = false);
+    });
   }
 
-  Future<void> _connect() async {
-    setState(() => _stage = _PairStage.connecting);
-    await Future.delayed(const Duration(milliseconds: 1200));
-    if (!mounted) return;
-    setState(() => _stage = _PairStage.connected);
+  Future<void> _connect(BluetoothDevice device) async {
+    setState(() => _connectingRemoteId = device.remoteId.str);
+    await _bleService.connectToDevice(device);
   }
 
   void _unpair() {
-    setState(() => _stage = _PairStage.idle);
+    _bleService.disconnect();
+    setState(() {
+      _isConnected = false;
+      _isScanning = false;
+      _foundDevices = const [];
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final isConnected = _stage == _PairStage.connected;
-
     return Container(
       width: double.infinity,
       height: double.infinity,
@@ -63,49 +107,74 @@ class _DeviceScreenState extends State<DeviceScreen>
       child: SafeArea(
         child: Column(
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Pair your SafeSeizure device',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textHeading,
-                    ),
-                  ),
-                  SizedBox(height: 6),
-                  Text(
-                    'Scan for your wearable to start monitoring.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
+            const _Header(),
+            if (_isConnected) ...[
+              const SizedBox(height: 24),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: _ConnectedSection(
+                  deviceName:
+                      _bleService.connectedDeviceName ?? 'SafeSeizure device',
+                  onUnpair: _unpair,
+                ),
               ),
-            ),
-            Expanded(
-              child: Center(
-                child: isConnected
-                    ? const _ConnectedBadge()
-                    : _PulsingRings(
+              const Expanded(child: SizedBox()),
+            ] else ...[
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 12),
+                      _PulsingRings(
                         controller: _pulseController,
-                        child: Image.asset('assets/device.png', width: 180),
+                        child: Image.asset('assets/device.png', width: 150),
+                      ),
+                      const SizedBox(height: 24),
+                      if (_foundDevices.isEmpty)
+                        Text(
+                          _isScanning
+                              ? 'Searching for nearby devices…'
+                              : 'Tap "Scan for Devices" to find your wearable.',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textSecondary,
+                          ),
+                        )
+                      else
+                        Column(
+                          children: [
+                            for (final result in _foundDevices) ...[
+                              _DeviceRow(
+                                name: result.device.platformName.isNotEmpty
+                                    ? result.device.platformName
+                                    : 'SafeSeizure device',
+                                isConnecting:
+                                    _connectingRemoteId ==
+                                    result.device.remoteId.str,
+                                onTap: _connectingRemoteId == null
+                                    ? () => _connect(result.device)
+                                    : null,
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 110),
+                child: _isScanning
+                    ? const _BusyButton(label: 'Scanning…')
+                    : AppButton(
+                        label: 'Scan for Devices',
+                        onPressed: _startScan,
                       ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 110),
-              child: _BottomAction(
-                stage: _stage,
-                onScan: _startScan,
-                onConnect: _connect,
-                onUnpair: _unpair,
-              ),
-            ),
+            ],
           ],
         ),
       ),
@@ -113,128 +182,44 @@ class _DeviceScreenState extends State<DeviceScreen>
   }
 }
 
-class _BottomAction extends StatelessWidget {
-  const _BottomAction({
-    required this.stage,
-    required this.onScan,
-    required this.onConnect,
-    required this.onUnpair,
-  });
-
-  final _PairStage stage;
-  final VoidCallback onScan;
-  final VoidCallback onConnect;
-  final VoidCallback onUnpair;
+class _Header extends StatelessWidget {
+  const _Header();
 
   @override
   Widget build(BuildContext context) {
-    switch (stage) {
-      case _PairStage.idle:
-        return AppButton(label: 'Scan for Devices', onPressed: onScan);
-      case _PairStage.scanning:
-        return const _BusyButton(label: 'Scanning…');
-      case _PairStage.discovered:
-        return _DeviceRow(
-          subtitle: 'Nearby · Tap to connect',
-          trailing: const Icon(
-            Icons.chevron_right_rounded,
-            color: AppColors.textSecondary,
-          ),
-          onTap: onConnect,
-        );
-      case _PairStage.connecting:
-        return const _DeviceRow(
-          subtitle: 'Connecting…',
-          trailing: SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: AppColors.accentPrimary,
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(20, 20, 20, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Pair your SafeSeizure device',
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textHeading,
             ),
           ),
-        );
-      case _PairStage.connected:
-        return Column(
-          children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceCard,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x0F000000),
-                    blurRadius: 16,
-                    offset: Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: const BoxDecoration(
-                      color: AppColors.statusGreen,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.watch_rounded,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _deviceName,
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textHeading,
-                          ),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          'Connected',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.statusGreen,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            AppButton(
-              label: 'Unpair Device',
-              onPressed: onUnpair,
-              variant: AppButtonVariant.secondary,
-            ),
-          ],
-        );
-    }
+          SizedBox(height: 6),
+          Text(
+            'Scan for your wearable to start monitoring.',
+            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+          ),
+        ],
+      ),
+    );
   }
 }
 
 class _DeviceRow extends StatelessWidget {
   const _DeviceRow({
-    required this.subtitle,
-    required this.trailing,
-    this.onTap,
+    required this.name,
+    required this.isConnecting,
+    required this.onTap,
   });
 
-  final String subtitle;
-  final Widget trailing;
+  final String name;
+  final bool isConnecting;
   final VoidCallback? onTap;
 
   @override
@@ -276,9 +261,9 @@ class _DeviceRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    _deviceName,
-                    style: TextStyle(
+                  Text(
+                    name,
+                    style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
                       color: AppColors.textHeading,
@@ -286,7 +271,7 @@ class _DeviceRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    subtitle,
+                    isConnecting ? 'Connecting…' : 'Tap to connect',
                     style: const TextStyle(
                       fontSize: 12,
                       color: AppColors.textSecondary,
@@ -295,10 +280,101 @@ class _DeviceRow extends StatelessWidget {
                 ],
               ),
             ),
-            trailing,
+            if (isConnecting)
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.accentPrimary,
+                ),
+              )
+            else
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textSecondary,
+              ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ConnectedSection extends StatelessWidget {
+  const _ConnectedSection({required this.deviceName, required this.onUnpair});
+
+  final String deviceName;
+  final VoidCallback onUnpair;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceCard,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0F000000),
+                blurRadius: 16,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: const BoxDecoration(
+                  color: AppColors.statusGreen,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.watch_rounded,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      deviceName,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textHeading,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'Connected',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.statusGreen,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        AppButton(
+          label: 'Unpair Device',
+          onPressed: onUnpair,
+          variant: AppButtonVariant.secondary,
+        ),
+      ],
     );
   }
 }
@@ -343,30 +419,13 @@ class _BusyButton extends StatelessWidget {
   }
 }
 
-class _ConnectedBadge extends StatelessWidget {
-  const _ConnectedBadge();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 96,
-      height: 96,
-      decoration: const BoxDecoration(
-        color: AppColors.statusGreen,
-        shape: BoxShape.circle,
-      ),
-      child: const Icon(Icons.check_rounded, color: Colors.white, size: 48),
-    );
-  }
-}
-
 class _PulsingRings extends StatelessWidget {
   const _PulsingRings({required this.controller, required this.child});
 
   final AnimationController controller;
   final Widget child;
 
-  static const _ringSize = 220.0;
+  static const _ringSize = 190.0;
 
   @override
   Widget build(BuildContext context) {
