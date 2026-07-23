@@ -10,25 +10,32 @@ class AppButton extends StatelessWidget {
     required this.label,
     required this.onPressed,
     this.variant = AppButtonVariant.primary,
+    this.isLoading = false,
   });
 
   final String label;
   final VoidCallback onPressed;
   final AppButtonVariant variant;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
     final isPrimary = variant == AppButtonVariant.primary;
+    final foregroundColor = isPrimary ? Colors.white : AppColors.textHeading;
 
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
-        onPressed: onPressed,
+        onPressed: isLoading ? null : onPressed,
         style: ElevatedButton.styleFrom(
           backgroundColor: isPrimary
               ? AppColors.accentPrimary
               : Colors.white,
-          foregroundColor: isPrimary ? Colors.white : AppColors.textHeading,
+          foregroundColor: foregroundColor,
+          disabledBackgroundColor: isPrimary
+              ? AppColors.accentPrimary
+              : Colors.white,
+          disabledForegroundColor: foregroundColor,
           side: isPrimary
               ? BorderSide.none
               : const BorderSide(color: AppColors.borderSubtle),
@@ -38,10 +45,22 @@ class AppButton extends StatelessWidget {
           ),
           elevation: 0,
         ),
-        child: Text(
-          label,
-          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
-        ),
+        child: isLoading
+            ? SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: foregroundColor,
+                ),
+              )
+            : Text(
+                label,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 15,
+                ),
+              ),
       ),
     );
   }

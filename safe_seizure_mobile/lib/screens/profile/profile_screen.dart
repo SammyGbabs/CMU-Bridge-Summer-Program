@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../theme/app_colors.dart';
 import '../auth/login_screen.dart';
@@ -13,7 +14,22 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _notificationsEnabled = true;
 
-  void _logout() {
+  String get _firstName {
+    final metadata = Supabase.instance.client.auth.currentUser?.userMetadata;
+    final firstName = metadata?['first_name'] as String?;
+    return (firstName == null || firstName.isEmpty) ? 'there' : firstName;
+  }
+
+  String get _roleLabel {
+    final metadata = Supabase.instance.client.auth.currentUser?.userMetadata;
+    final role = metadata?['role'] as String?;
+    if (role == null || role.isEmpty) return 'Caregiver';
+    return role[0].toUpperCase() + role.substring(1);
+  }
+
+  Future<void> _logout() async {
+    await Supabase.instance.client.auth.signOut();
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginScreen()),
       (route) => false,
@@ -48,9 +64,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ),
               const SizedBox(height: 12),
-              const Text(
-                'Caregiver',
-                style: TextStyle(
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.accentPrimary,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  _roleLabel.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _firstName,
+                style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
                   color: AppColors.textHeading,

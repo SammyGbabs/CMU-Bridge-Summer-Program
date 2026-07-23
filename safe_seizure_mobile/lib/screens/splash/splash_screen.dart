@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../onboarding/onboarding_screen.dart';
+import '../root/root_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -15,8 +17,13 @@ class _SplashScreenState extends State<SplashScreen> {
     super.initState();
     Future.delayed(const Duration(seconds: 2), () {
       if (!mounted) return;
+      final hasSession =
+          Supabase.instance.client.auth.currentSession != null;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+        MaterialPageRoute(
+          builder: (_) =>
+              hasSession ? const RootScreen() : const OnboardingScreen(),
+        ),
       );
     });
   }
@@ -25,28 +32,7 @@ class _SplashScreenState extends State<SplashScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset(
-              'assets/logo_mark.png',
-              width: 140,
-              height: 140,
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'SafeSeizure',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 26,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ],
-        ),
-      ),
+      body: Center(child: Image.asset('assets/logo.png', width: 240)),
     );
   }
 }

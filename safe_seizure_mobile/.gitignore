@@ -12,6 +12,20 @@
 .swiftpm/
 migrate_working_dir/
 
+# Secrets / credentials — never commit real values
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+google-services.json
+GoogleService-Info.plist
+
+# Patient data — synthetic/mock only, never real exports
+/data/patient_exports/
+*.db
+*.sqlite
+
 # IntelliJ related
 *.iml
 *.ipr
