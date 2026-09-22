@@ -8,7 +8,9 @@ import '../../widgets/pill_filter.dart';
 const _filterOptions = ['All', 'Confirmed', 'Cancelled'];
 
 class DiaryScreen extends StatefulWidget {
-  const DiaryScreen({super.key});
+  const DiaryScreen({super.key, required this.effectiveUserId});
+
+  final String? effectiveUserId;
 
   @override
   State<DiaryScreen> createState() => _DiaryScreenState();
@@ -28,8 +30,18 @@ class _DiaryScreenState extends State<DiaryScreen> {
   }
 
   Future<void> _loadEvents() async {
+    final userId = widget.effectiveUserId;
+    if (userId == null) {
+      setState(() => _isLoading = false);
+      return;
+    }
     setState(() => _isLoading = true);
-    final events = await _repository.fetchRecent();
+    List<SeizureEvent> events = const [];
+    try {
+      events = await _repository.fetchRecent(userId: userId);
+    } catch (e) {
+      debugPrint('Failed to load seizure events: $e');
+    }
     if (!mounted) return;
     setState(() {
       _events = events;
@@ -110,7 +122,12 @@ class _DiaryScreenState extends State<DiaryScreen> {
                   ),
                 ),
               ),
-              if (_isLoading)
+              if (widget.effectiveUserId == null)
+                const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: _NotLinkedMessage(),
+                )
+              else if (_isLoading)
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
@@ -131,6 +148,57 @@ class _DiaryScreenState extends State<DiaryScreen> {
                 ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NotLinkedMessage extends StatelessWidget {
+  const _NotLinkedMessage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: const BoxDecoration(
+                color: AppColors.borderSubtle,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.link_off_rounded,
+                color: AppColors.textSecondary,
+                size: 26,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              "You're not linked to anyone yet",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textHeading,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Ask the person you care for to add your email under '
+              'Emergency Contact in their Profile.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
+            ),
+          ],
         ),
       ),
     );

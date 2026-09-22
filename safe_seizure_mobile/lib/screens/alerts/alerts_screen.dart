@@ -1,16 +1,24 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../models/seizure_event.dart';
 import '../../services/ble_connection_service.dart';
 import '../../services/seizure_events_repository.dart';
 import '../../theme/app_colors.dart';
+import '../../widgets/app_button.dart';
 
 class AlertsScreen extends StatefulWidget {
-  const AlertsScreen({super.key, required this.bleService});
+  const AlertsScreen({
+    super.key,
+    required this.isCaregiver,
+    required this.effectiveUserId,
+    required this.seizureState,
+    required this.onAcknowledge,
+  });
 
-  final BleConnectionService bleService;
+  final bool isCaregiver;
+  final String? effectiveUserId;
+  final SeizureState seizureState;
+  final VoidCallback onAcknowledge;
 
   @override
   State<AlertsScreen> createState() => _AlertsScreenState();
@@ -18,31 +26,28 @@ class AlertsScreen extends StatefulWidget {
 
 class _AlertsScreenState extends State<AlertsScreen> {
   final _repository = SeizureEventsRepository();
-  late final StreamSubscription<SeizureState> _stateSubscription;
 
-  SeizureState _seizureState = SeizureState.normal;
   bool _isLoading = true;
   List<SeizureEvent> _confirmedEvents = const [];
 
   @override
   void initState() {
     super.initState();
-    _seizureState = widget.bleService.lastState;
-    _stateSubscription = widget.bleService.stateStream.listen((state) {
-      if (!mounted) return;
-      setState(() => _seizureState = state);
-    });
     _loadEvents();
   }
 
-  @override
-  void dispose() {
-    _stateSubscription.cancel();
-    super.dispose();
-  }
-
   Future<void> _loadEvents() async {
-    final events = await _repository.fetchRecent();
+    final userId = widget.effectiveUserId;
+    if (userId == null) {
+      setState(() => _isLoading = false);
+      return;
+    }
+    List<SeizureEvent> events = const [];
+    try {
+      events = await _repository.fetchRecent(userId: userId);
+    } catch (e) {
+      debugPrint('Failed to load seizure events: $e');
+    }
     if (!mounted) return;
     setState(() {
       _confirmedEvents = events
@@ -54,7 +59,8 @@ class _AlertsScreenState extends State<AlertsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isLive = _seizureState != SeizureState.normal;
+    final isLinked = !widget.isCaregiver || widget.effectiveUserId != null;
+    final isLive = widget.seizureState != SeizureState.normal;
 
     return Container(
       width: double.infinity,
@@ -88,15 +94,26 @@ class _AlertsScreenState extends State<AlertsScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
-                      if (isLive) ...[
-                        _LiveStatusBanner(state: _seizureState),
+                      if (isLinked && isLive) ...[
+                        _LiveStatusBanner(
+                          state: widget.seizureState,
+                          showAcknowledge:
+                              widget.isCaregiver &&
+                              widget.seizureState == SeizureState.alarm,
+                          onAcknowledge: widget.onAcknowledge,
+                        ),
                         const SizedBox(height: 20),
                       ],
                     ],
                   ),
                 ),
               ),
-              if (_isLoading)
+              if (!isLinked)
+                const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: _NotLinkedMessage(),
+                )
+              else if (_isLoading)
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
@@ -123,10 +140,67 @@ class _AlertsScreenState extends State<AlertsScreen> {
   }
 }
 
+class _NotLinkedMessage extends StatelessWidget {
+  const _NotLinkedMessage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: const BoxDecoration(
+                color: AppColors.borderSubtle,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.link_off_rounded,
+                color: AppColors.textSecondary,
+                size: 26,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              "You're not linked to anyone yet",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textHeading,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Ask the person you care for to add your email under '
+              'Emergency Contact in their Profile.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _LiveStatusBanner extends StatelessWidget {
-  const _LiveStatusBanner({required this.state});
+  const _LiveStatusBanner({
+    required this.state,
+    required this.showAcknowledge,
+    required this.onAcknowledge,
+  });
 
   final SeizureState state;
+  final bool showAcknowledge;
+  final VoidCallback onAcknowledge;
 
   @override
   Widget build(BuildContext context) {
@@ -145,44 +219,56 @@ class _LiveStatusBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-            child: const Icon(
-              Icons.notifications_active_rounded,
-              color: Colors.white,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: color,
-                  ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  message,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                    height: 1.4,
-                  ),
+                child: const Icon(
+                  Icons.notifications_active_rounded,
+                  color: Colors.white,
+                  size: 20,
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: color,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      message,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
+          if (showAcknowledge) ...[
+            const SizedBox(height: 16),
+            AppButton(label: 'Acknowledge', onPressed: onAcknowledge),
+          ],
         ],
       ),
     );

@@ -5,8 +5,10 @@ import '../models/seizure_event.dart';
 class SeizureEventsRepository {
   SupabaseClient get _client => Supabase.instance.client;
 
-  Future<List<SeizureEvent>> fetchRecent({int limit = 100}) async {
-    final userId = _client.auth.currentUser?.id;
+  /// Fetches events for [userId] if given (e.g. a caregiver viewing their
+  /// linked patient's diary), otherwise the current signed-in user's own.
+  Future<List<SeizureEvent>> fetchRecent({String? userId, int limit = 100}) async {
+    userId ??= _client.auth.currentUser?.id;
     if (userId == null) return [];
 
     final rows = await _client
