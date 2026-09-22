@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../../theme/app_colors.dart';
+import '../../widgets/app_button.dart';
 
 class SuspectedAlertScreen extends StatelessWidget {
   const SuspectedAlertScreen({
     super.key,
     required this.secondsRemaining,
     required this.totalSeconds,
+    required this.onMarkFalseAlarm,
   });
 
   final int secondsRemaining;
   final int totalSeconds;
+  final VoidCallback onMarkFalseAlarm;
 
   @override
   Widget build(BuildContext context) {
@@ -146,6 +149,12 @@ class SuspectedAlertScreen extends StatelessWidget {
                     color: AppColors.textSecondary,
                     height: 1.4,
                   ),
+                ),
+                const SizedBox(height: 20),
+                AppButton(
+                  label: 'Mark as False Alarm',
+                  onPressed: onMarkFalseAlarm,
+                  variant: AppButtonVariant.secondary,
                 ),
               ],
             ),

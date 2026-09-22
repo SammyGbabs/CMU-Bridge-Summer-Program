@@ -9,8 +9,10 @@ class SensorReadingsRepository {
   /// charts. Returns an empty list until the wearable firmware exposes
   /// motion/rotation telemetry and the app starts writing to this table —
   /// there is no mock/demo data here.
-  Future<List<SensorReading>> fetchToday() async {
-    final userId = _client.auth.currentUser?.id;
+  /// Fetches readings for [userId] if given (e.g. a caregiver viewing their
+  /// linked patient's trends), otherwise the current signed-in user's own.
+  Future<List<SensorReading>> fetchToday({String? userId}) async {
+    userId ??= _client.auth.currentUser?.id;
     if (userId == null) return [];
 
     final startOfDay = DateTime.now().toUtc();

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../models/seizure_event.dart';
 import 'ble_connection_service.dart';
 import 'seizure_events_repository.dart';
@@ -22,6 +24,7 @@ class SeizureEventRecorder {
   bool _episodeReachedAlarm = false;
 
   void _handleStateChange(SeizureState state) {
+    debugPrint('SeizureEventRecorder: state=$state episodeStart=$_episodeStart');
     switch (state) {
       case SeizureState.suspected:
         _episodeStart ??= DateTime.now();
@@ -33,7 +36,7 @@ class SeizureEventRecorder {
     }
   }
 
-  void _resolveEpisodeIfAny() {
+  Future<void> _resolveEpisodeIfAny() async {
     final start = _episodeStart;
     if (start == null) return;
 
@@ -42,15 +45,22 @@ class SeizureEventRecorder {
         ? SeizureEventStatus.confirmed
         : SeizureEventStatus.cancelled;
 
-    _repository.insertEvent(
-      occurredAt: start,
-      resolvedAt: now,
-      durationSeconds: now.difference(start).inSeconds,
-      status: status,
-    );
-
+    // Clear immediately so a slow/failed write can't double-count if
+    // another state change arrives while this is in flight.
     _episodeStart = null;
     _episodeReachedAlarm = false;
+
+    try {
+      await _repository.insertEvent(
+        occurredAt: start,
+        resolvedAt: now,
+        durationSeconds: now.difference(start).inSeconds,
+        status: status,
+      );
+      debugPrint('SeizureEventRecorder: saved $status event to diary');
+    } catch (e) {
+      debugPrint('SeizureEventRecorder: failed to save event: $e');
+    }
   }
 
   void dispose() {

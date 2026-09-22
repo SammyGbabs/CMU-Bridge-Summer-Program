@@ -1,14 +1,18 @@
 import 'dart:async';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vibration/vibration.dart';
 import 'package:vibration/vibration_presets.dart';
 
+import '../../models/device_status.dart';
 import '../../services/ble_connection_service.dart';
+import '../../services/caregiver_links_repository.dart';
+import '../../services/device_status_repository.dart';
 import '../../services/seizure_event_recorder.dart';
 import '../../services/sensor_reading_recorder.dart';
+import '../../theme/app_colors.dart';
 import '../../widgets/app_bottom_nav.dart';
 import '../alerts/alarm_alert_screen.dart';
 import '../alerts/alerts_screen.dart';
@@ -18,11 +22,18 @@ import '../diary/diary_screen.dart';
 import '../home/home_screen.dart';
 import '../profile/profile_screen.dart';
 
-const _navIcons = [
+const _navIconsWearer = [
   Icons.home_rounded,
   Icons.calendar_today_outlined,
   Icons.notifications_none_rounded,
   Icons.monitor_heart_outlined,
+  Icons.person_outline_rounded,
+];
+
+const _navIconsCaregiver = [
+  Icons.home_rounded,
+  Icons.calendar_today_outlined,
+  Icons.notifications_none_rounded,
   Icons.person_outline_rounded,
 ];
 
@@ -44,9 +55,19 @@ class _RootScreenState extends State<RootScreen> {
   late final BleConnectionService _bleService;
   late final SeizureEventRecorder _eventRecorder;
   late final SensorReadingRecorder _sensorRecorder;
-  late final StreamSubscription<SeizureState> _stateSubscription;
+  final _deviceStatusRepository = DeviceStatusRepository();
+  final _caregiverLinksRepository = CaregiverLinksRepository();
+  final _audioPlayer = AudioPlayer();
+
+  StreamSubscription<SeizureState>? _localStateSubscription;
+  StreamSubscription<DeviceStatus?>? _remoteStatusSubscription;
   Timer? _countdownTimer;
   Timer? _alarmAlertTimer;
+
+  bool _resolvingRole = true;
+  bool _isCaregiver = false;
+  String? _effectiveUserId;
+  String? _patientFirstName;
 
   SeizureState _seizureState = SeizureState.normal;
   int _secondsRemaining = _suspectedWindowSeconds;
@@ -58,16 +79,76 @@ class _RootScreenState extends State<RootScreen> {
     _bleService = BleConnectionService();
     _eventRecorder = SeizureEventRecorder(_bleService);
     _sensorRecorder = SensorReadingRecorder(_bleService);
-    _stateSubscription = _bleService.stateStream.listen(_handleStateChange);
+    _initRoleAndStatusSource();
+  }
+
+  Future<void> _initRoleAndStatusSource() async {
+    final auth = Supabase.instance.client.auth;
+    final role = auth.currentUser?.userMetadata?['role'] as String?;
+    final ownId = auth.currentUser?.id;
+    _isCaregiver = role == 'caregiver';
+
+    if (_isCaregiver) {
+      final patientId = await _caregiverLinksRepository
+          .resolveLinkedPatientId();
+      _effectiveUserId = patientId;
+      debugPrint('RootScreen: caregiver linked to patient=$patientId');
+      if (patientId != null) {
+        _patientFirstName = await _caregiverLinksRepository
+            .fetchPatientFirstName(patientId);
+        _remoteStatusSubscription = _deviceStatusRepository
+            .watchStatus(patientId)
+            .listen(
+              (status) {
+                if (status == null) return;
+                _handleStateChange(status.state);
+              },
+              onError: (e) =>
+                  debugPrint('RootScreen: patient status stream error: $e'),
+            );
+      }
+    } else {
+      _effectiveUserId = ownId;
+      _localStateSubscription = _bleService.stateStream.listen((state) {
+        _handleStateChange(state);
+        if (ownId != null) {
+          _deviceStatusRepository.publishStatus(ownId, state);
+        }
+      });
+      if (ownId != null) {
+        // Watch our own live-status row so a linked caregiver can remotely
+        // request a dismiss — only this phone has the real BLE link needed
+        // to actually clear the alarm on the device.
+        _remoteStatusSubscription = _deviceStatusRepository
+            .watchStatus(ownId)
+            .listen(
+              (status) {
+                if (status == null || !status.dismissRequested) return;
+                debugPrint(
+                  'RootScreen: relaying remote dismiss request to BLE',
+                );
+                _bleService.dismissAlarm();
+                _deviceStatusRepository.clearDismissRequest(ownId);
+              },
+              onError: (e) =>
+                  debugPrint('RootScreen: own status stream error: $e'),
+            );
+      }
+    }
+
+    if (!mounted) return;
+    setState(() => _resolvingRole = false);
   }
 
   @override
   void dispose() {
     _countdownTimer?.cancel();
     _alarmAlertTimer?.cancel();
-    _stateSubscription.cancel();
+    _localStateSubscription?.cancel();
+    _remoteStatusSubscription?.cancel();
     _eventRecorder.dispose();
     _sensorRecorder.dispose();
+    _audioPlayer.dispose();
     _bleService.disconnect();
     _bleService.dispose();
     super.dispose();
@@ -82,8 +163,7 @@ class _RootScreenState extends State<RootScreen> {
         _detectedAt ??= DateTime.now();
         _startCountdown();
         _alarmAlertTimer?.cancel();
-        // Vibrate only — the contract explicitly says not to sound the
-        // full alarm yet while still just "suspected".
+        _playSuspectedSound();
         Vibration.vibrate(preset: VibrationPreset.doubleBuzz);
       case SeizureState.alarm:
         _detectedAt ??= DateTime.now();
@@ -93,6 +173,7 @@ class _RootScreenState extends State<RootScreen> {
         _countdownTimer?.cancel();
         _alarmAlertTimer?.cancel();
         Vibration.cancel();
+        _audioPlayer.stop();
         _detectedAt = null;
         _secondsRemaining = _suspectedWindowSeconds;
     }
@@ -117,19 +198,58 @@ class _RootScreenState extends State<RootScreen> {
 
   void _startAlarmAlert() {
     _alarmAlertTimer?.cancel();
-    _triggerAlarmAlert();
-    _alarmAlertTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
-      _triggerAlarmAlert();
+    _playAlarmSound();
+    Vibration.vibrate(preset: VibrationPreset.emergencyAlert);
+    _alarmAlertTimer = Timer.periodic(const Duration(milliseconds: 1800), (_) {
+      Vibration.vibrate(preset: VibrationPreset.emergencyAlert);
     });
   }
 
-  void _triggerAlarmAlert() {
-    Vibration.vibrate(preset: VibrationPreset.emergencyAlert);
-    SystemSound.play(SystemSoundType.alert);
+  Future<void> _playSuspectedSound() async {
+    try {
+      await _audioPlayer.setReleaseMode(ReleaseMode.loop);
+      await _audioPlayer.play(AssetSource('alert.mp3'));
+    } catch (e) {
+      debugPrint('Suspected sound unavailable: $e');
+    }
+  }
+
+  Future<void> _playAlarmSound() async {
+    try {
+      await _audioPlayer.setReleaseMode(ReleaseMode.loop);
+      await _audioPlayer.play(AssetSource('emergency.mp3'));
+    } catch (e) {
+      debugPrint('Alarm sound unavailable: $e');
+    }
+  }
+
+  void _markFalseAlarm() {
+    // Send the real BLE dismiss (only actually honored by firmware during
+    // ALARM today, not yet during SUSPECTED). Regardless of whether the
+    // wearable itself listens, stop the alert on this phone right away and
+    // tell any linked caregiver immediately — don't wait on a BLE round
+    // trip that the firmware doesn't yet guarantee will happen.
+    _bleService.dismissAlarm();
+    _handleStateChange(SeizureState.normal);
+    final ownId = Supabase.instance.client.auth.currentUser?.id;
+    if (ownId != null) {
+      _deviceStatusRepository.publishStatus(ownId, SeizureState.normal);
+    }
   }
 
   void _acknowledgeAlarm() {
-    _bleService.dismissAlarm();
+    if (_isCaregiver) {
+      // Stop the alert on this phone immediately rather than waiting for
+      // the wearer's phone to relay a confirmed BLE dismiss back through
+      // Realtime — that round trip can lag or fail if the wearer's phone
+      // is briefly disconnected.
+      _handleStateChange(SeizureState.normal);
+      if (_effectiveUserId != null) {
+        _deviceStatusRepository.requestDismiss(_effectiveUserId!);
+      }
+    } else {
+      _bleService.dismissAlarm();
+    }
   }
 
   void _callEmergencyContact() {
@@ -144,18 +264,23 @@ class _RootScreenState extends State<RootScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final role =
-        Supabase.instance.client.auth.currentUser?.userMetadata?['role']
-            as String?;
-    final isCaregiver = role == 'caregiver';
+    if (_resolvingRole) {
+      return const Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: CircularProgressIndicator(color: AppColors.accentPrimary),
+        ),
+      );
+    }
 
     Widget? overlay;
-    if (_seizureState == SeizureState.suspected && !isCaregiver) {
+    if (_seizureState == SeizureState.suspected && !_isCaregiver) {
       overlay = SuspectedAlertScreen(
         secondsRemaining: _secondsRemaining.clamp(0, _suspectedWindowSeconds),
         totalSeconds: _suspectedWindowSeconds,
+        onMarkFalseAlarm: _markFalseAlarm,
       );
-    } else if (_seizureState == SeizureState.alarm && isCaregiver) {
+    } else if (_seizureState == SeizureState.alarm && _isCaregiver) {
       overlay = AlarmAlertScreen(
         detectedAt: _detectedAt ?? DateTime.now(),
         onAcknowledge: _acknowledgeAlarm,
@@ -163,26 +288,36 @@ class _RootScreenState extends State<RootScreen> {
       );
     }
 
+    final tabs = [
+      HomeScreen(
+        bleService: _bleService,
+        isCaregiver: _isCaregiver,
+        effectiveUserId: _effectiveUserId,
+        seizureState: _seizureState,
+        patientFirstName: _patientFirstName,
+      ),
+      DiaryScreen(effectiveUserId: _effectiveUserId),
+      AlertsScreen(
+        isCaregiver: _isCaregiver,
+        effectiveUserId: _effectiveUserId,
+        seizureState: _seizureState,
+        onAcknowledge: _acknowledgeAlarm,
+      ),
+      if (!_isCaregiver) DeviceScreen(bleService: _bleService),
+      const ProfileScreen(),
+    ];
+
     return Scaffold(
       extendBody: true,
       body: Stack(
         children: [
-          IndexedStack(
-            index: _navIndex,
-            children: [
-              HomeScreen(bleService: _bleService),
-              const DiaryScreen(),
-              AlertsScreen(bleService: _bleService),
-              DeviceScreen(bleService: _bleService),
-              const ProfileScreen(),
-            ],
-          ),
+          IndexedStack(index: _navIndex, children: tabs),
           if (overlay != null) Positioned.fill(child: overlay),
         ],
       ),
       bottomNavigationBar: AppBottomNav(
         currentIndex: _navIndex,
-        icons: _navIcons,
+        icons: _isCaregiver ? _navIconsCaregiver : _navIconsWearer,
         onTap: (index) => setState(() => _navIndex = index),
       ),
     );

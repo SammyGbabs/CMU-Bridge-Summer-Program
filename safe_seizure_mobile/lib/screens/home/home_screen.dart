@@ -10,9 +10,20 @@ import '../../theme/app_colors.dart';
 import '../../widgets/trend_stat_card.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.bleService});
+  const HomeScreen({
+    super.key,
+    required this.bleService,
+    required this.isCaregiver,
+    required this.effectiveUserId,
+    required this.seizureState,
+    this.patientFirstName,
+  });
 
   final BleConnectionService bleService;
+  final bool isCaregiver;
+  final String? effectiveUserId;
+  final SeizureState seizureState;
+  final String? patientFirstName;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -22,12 +33,10 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _maxLivePoints = 30;
 
   final _sensorReadingsRepository = SensorReadingsRepository();
-  late final StreamSubscription<SeizureState> _stateSubscription;
-  late final StreamSubscription<bool> _connectionSubscription;
-  late final StreamSubscription<double> _motionSubscription;
-  late final StreamSubscription<double> _rotationSubscription;
+  StreamSubscription<bool>? _connectionSubscription;
+  StreamSubscription<double>? _motionSubscription;
+  StreamSubscription<double>? _rotationSubscription;
 
-  SeizureState _seizureState = SeizureState.normal;
   bool _isConnected = false;
   List<SensorReading> _motionReadings = const [];
   List<SensorReading> _rotationReadings = const [];
@@ -44,42 +53,42 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _seizureState = widget.bleService.lastState;
-    _isConnected = widget.bleService.isConnected;
-    _stateSubscription = widget.bleService.stateStream.listen((state) {
-      if (!mounted) return;
-      setState(() => _seizureState = state);
-    });
-    _connectionSubscription = widget.bleService.connectionStream.listen((
-      connected,
-    ) {
-      if (!mounted) return;
-      setState(() => _isConnected = connected);
-    });
-    _motionSubscription = widget.bleService.motionIntensityStream.listen((
-      value,
-    ) {
-      if (!mounted) return;
-      setState(() {
-        _loadingReadings = false;
-        _motionReadings = _appendCapped(
-          _motionReadings,
-          SensorReading(recordedAt: DateTime.now(), motionIntensity: value),
-        );
+    if (!widget.isCaregiver) {
+      _isConnected = widget.bleService.isConnected;
+      _connectionSubscription = widget.bleService.connectionStream.listen((
+        connected,
+      ) {
+        if (!mounted) return;
+        setState(() => _isConnected = connected);
       });
-    });
-    _rotationSubscription = widget.bleService.rotationActivityStream.listen((
-      value,
-    ) {
-      if (!mounted) return;
-      setState(() {
-        _loadingReadings = false;
-        _rotationReadings = _appendCapped(
-          _rotationReadings,
-          SensorReading(recordedAt: DateTime.now(), rotationActivity: value),
-        );
+      _motionSubscription = widget.bleService.motionIntensityStream.listen((
+        value,
+      ) {
+        if (!mounted) return;
+        setState(() {
+          _loadingReadings = false;
+          _motionReadings = _appendCapped(
+            _motionReadings,
+            SensorReading(recordedAt: DateTime.now(), motionIntensity: value),
+          );
+        });
       });
-    });
+      _rotationSubscription = widget.bleService.rotationActivityStream.listen(
+        (value) {
+          if (!mounted) return;
+          setState(() {
+            _loadingReadings = false;
+            _rotationReadings = _appendCapped(
+              _rotationReadings,
+              SensorReading(
+                recordedAt: DateTime.now(),
+                rotationActivity: value,
+              ),
+            );
+          });
+        },
+      );
+    }
     _loadReadings();
   }
 
@@ -94,15 +103,24 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _stateSubscription.cancel();
-    _connectionSubscription.cancel();
-    _motionSubscription.cancel();
-    _rotationSubscription.cancel();
+    _connectionSubscription?.cancel();
+    _motionSubscription?.cancel();
+    _rotationSubscription?.cancel();
     super.dispose();
   }
 
   Future<void> _loadReadings() async {
-    final readings = await _sensorReadingsRepository.fetchToday();
+    final userId = widget.effectiveUserId;
+    if (userId == null) {
+      setState(() => _loadingReadings = false);
+      return;
+    }
+    List<SensorReading> readings = const [];
+    try {
+      readings = await _sensorReadingsRepository.fetchToday(userId: userId);
+    } catch (e) {
+      debugPrint('Failed to load sensor readings: $e');
+    }
     if (!mounted) return;
     setState(() {
       _motionReadings = readings
@@ -117,6 +135,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isLinked = !widget.isCaregiver || widget.effectiveUserId != null;
+
     return Container(
       width: double.infinity,
       height: double.infinity,
@@ -181,45 +201,53 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 110),
-                child: Column(
-                  children: [
-                    _StatusBanner(
-                      state: _seizureState,
-                      isConnected: _isConnected,
-                    ),
-                    const SizedBox(height: 20),
-                    _buildTrendCard(
-                      title: 'Motion Intensity',
-                      description:
-                          'Tracks the wearable\'s accelerometer signal '
-                          'throughout the day to flag unusual movement.',
-                      emptyMessage:
-                          'No motion data yet — connect your device '
-                          'to start monitoring.',
-                      values: _motionReadings
-                          .map((r) => r.motionIntensity!)
-                          .toList(),
-                    ),
-                    const SizedBox(height: 20),
-                    _buildTrendCard(
-                      title: 'Rotation Activity',
-                      description:
-                          'Measures gyroscope rotation patterns that may '
-                          'indicate abnormal motor activity.',
-                      emptyMessage:
-                          'No rotation data yet — connect your device '
-                          'to start monitoring.',
-                      values: _rotationReadings
-                          .map((r) => r.rotationActivity!)
-                          .toList(),
-                    ),
-                  ],
+            if (!isLinked)
+              const Expanded(child: _NotLinkedMessage())
+            else
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 110),
+                  child: Column(
+                    children: [
+                      _StatusBanner(
+                        state: widget.seizureState,
+                        isConnected: widget.isCaregiver
+                            ? true
+                            : _isConnected,
+                        patientFirstName: widget.isCaregiver
+                            ? widget.patientFirstName
+                            : null,
+                      ),
+                      const SizedBox(height: 20),
+                      _buildTrendCard(
+                        title: 'Motion Intensity',
+                        description:
+                            'Tracks the wearable\'s accelerometer signal '
+                            'throughout the day to flag unusual movement.',
+                        emptyMessage:
+                            'No motion data yet — connect your device '
+                            'to start monitoring.',
+                        values: _motionReadings
+                            .map((r) => r.motionIntensity!)
+                            .toList(),
+                      ),
+                      const SizedBox(height: 20),
+                      _buildTrendCard(
+                        title: 'Rotation Activity',
+                        description:
+                            'Measures gyroscope rotation patterns that may '
+                            'indicate abnormal motor activity.',
+                        emptyMessage:
+                            'No rotation data yet — connect your device '
+                            'to start monitoring.',
+                        values: _rotationReadings
+                            .map((r) => r.rotationActivity!)
+                            .toList(),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -253,6 +281,57 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+class _NotLinkedMessage extends StatelessWidget {
+  const _NotLinkedMessage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: const BoxDecoration(
+                color: AppColors.borderSubtle,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.link_off_rounded,
+                color: AppColors.textSecondary,
+                size: 26,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              "You're not linked to anyone yet",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textHeading,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Ask the person you care for to add your email under '
+              'Emergency Contact in their Profile.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _IconCircleButton extends StatelessWidget {
   const _IconCircleButton({required this.icon, required this.onTap});
 
@@ -280,10 +359,15 @@ class _IconCircleButton extends StatelessWidget {
 }
 
 class _StatusBanner extends StatelessWidget {
-  const _StatusBanner({required this.state, required this.isConnected});
+  const _StatusBanner({
+    required this.state,
+    required this.isConnected,
+    this.patientFirstName,
+  });
 
   final SeizureState state;
   final bool isConnected;
+  final String? patientFirstName;
 
   @override
   Widget build(BuildContext context) {
@@ -292,6 +376,7 @@ class _StatusBanner extends StatelessWidget {
     final String title;
     final String message;
     final bool isNeutral;
+    final name = patientFirstName;
 
     if (!isConnected) {
       color = AppColors.textSecondary;
@@ -304,21 +389,26 @@ class _StatusBanner extends StatelessWidget {
       switch (state) {
         case SeizureState.normal:
           color = AppColors.statusGreen;
-          icon = Icons.fact_check_outlined;
-          title = 'Stable';
+          icon = Icons.sentiment_satisfied_alt_rounded;
+          title = name != null ? '$name is Stable' : "You're Stable";
           message =
-              'Your motion intensity and rotation activity levels are normal.';
+              'Motion and rotation levels look calm — no signs of a seizure right now.';
         case SeizureState.suspected:
           color = AppColors.statusAmber;
-          icon = Icons.warning_amber_rounded;
-          title = 'Possible Seizure';
+          icon = Icons.sentiment_neutral_rounded;
+          title = name != null
+              ? '$name — Approaching Danger Levels'
+              : 'Approaching Danger Levels';
           message =
-              'A possible seizure was detected — checking for a cancel.';
+              'Unusual movement detected. Checking if the wearer can cancel this before it escalates.';
         case SeizureState.alarm:
           color = AppColors.statusRed;
-          icon = Icons.error_outline_rounded;
-          title = 'Seizure Alert';
-          message = 'A seizure has been detected and not cancelled.';
+          icon = Icons.sentiment_very_dissatisfied_rounded;
+          title = name != null
+              ? '$name — Active Seizure Detected'
+              : 'Active Seizure Detected';
+          message =
+              'A seizure is happening right now and hasn\'t been cancelled — check on them immediately.';
       }
     }
 

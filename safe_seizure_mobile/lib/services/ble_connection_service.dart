@@ -19,6 +19,8 @@ class BleConnectionService {
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _stateCharacteristic;
+  StreamSubscription<BluetoothConnectionState>? _connectionStateSubscription;
+  bool _isConnecting = false;
 
   String? get connectedDeviceName => _device?.platformName;
 
@@ -113,10 +115,19 @@ class BleConnectionService {
   }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
+    if (_isConnecting) {
+      debugPrint('_connectToDevice: already connecting, skipping duplicate call');
+      return;
+    }
+    _isConnecting = true;
     _device = device;
 
-    // Auto-reconnect if it drops
-    device.connectionState.listen((state) {
+    // Auto-reconnect if it drops. Cancel any previous listener first —
+    // otherwise every reconnect stacks another one, and overlapping
+    // connect attempts can leave _stateCharacteristic pointing at a stale
+    // GATT session from an earlier attempt.
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
         _setConnected(false);
         Future.delayed(const Duration(seconds: 2), () => _connectToDevice(device));
@@ -173,6 +184,8 @@ class BleConnectionService {
     } catch (e) {
       debugPrint('BLE connect/discoverServices failed: $e');
       _setConnected(false);
+    } finally {
+      _isConnecting = false;
     }
   }
 
@@ -214,9 +227,18 @@ class BleConnectionService {
   /// since only the physical device (double-tap) resolves the suspected
   /// state.
   Future<void> dismissAlarm() async {
-    if (_stateCharacteristic != null) {
-      await _stateCharacteristic!.write([0]);
+    final characteristic = _stateCharacteristic;
+    if (characteristic == null) {
+      debugPrint(
+        'dismissAlarm: no state characteristic available — not connected?',
+      );
+      return;
+    }
+    try {
+      await characteristic.write([0]);
       debugPrint('dismissAlarm: wrote 0');
+    } catch (e) {
+      debugPrint('dismissAlarm: write failed: $e');
     }
   }
 
@@ -226,6 +248,7 @@ class BleConnectionService {
 
   void dispose() {
     _scanResultsSubscription?.cancel();
+    _connectionStateSubscription?.cancel();
     _stateController.close();
     _connectionController.close();
     _motionController.close();

@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../theme/app_colors.dart';
 import '../auth/login_screen.dart';
+import '../emergency_contact/emergency_contact_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -97,7 +98,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 children: [
                   _SettingsRow(label: 'Personal information', onTap: () {}),
                   _SettingsRow(label: 'Medical information', onTap: () {}),
-                  _SettingsRow(label: 'Emergency contact', onTap: () {}),
+                  _SettingsRow(
+                    label: 'Emergency contact',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const EmergencyContactScreen(),
+                      ),
+                    ),
+                  ),
                   _SettingsRow(
                     label: 'Notifications',
                     trailing: Switch(
